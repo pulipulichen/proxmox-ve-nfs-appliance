@@ -21,6 +21,11 @@ CREDS_FILE=$CREDS_DIR/credentials
 export DEBIAN_FRONTEND=noninteractive
 
 echo "[1/8] Installing Debian components"
+# PBS installation can create pbs-enterprise.sources. Disable it *before*
+# the first apt-get update, otherwise later reruns fail with 401 Unauthorized.
+if [ -f /etc/apt/sources.list.d/pbs-enterprise.sources ]; then
+  mv /etc/apt/sources.list.d/pbs-enterprise.sources /etc/apt/sources.list.d/pbs-enterprise.sources.disabled-by-appliance
+fi
 apt-get update
 apt-get install -y nfs-kernel-server openssh-server samba smbclient git openssl ca-certificates wget
 

@@ -6,6 +6,7 @@
 - Preserve **only one password variable**, `ROOT_PASSWORD`, while storing the non-secret `PBS_FINGERPRINT` in the same mode-0600 local `credentials` file.
 - Recompute and update the fingerprint after PBS has started on each `start.sh` run, so PVE storage configuration is easier.
 - Display the fingerprint at the end of provisioning and document the correct PVE username `root@pam`.
+- Fix repeated deployment: disable PBS Enterprise APT source before the *first* APT refresh, because the PBS package may recreate the source and cause HTTP 401 on subsequent runs.
 
 ## 2026-11-05: Unified root credentials and Proxmox Backup Server
 
