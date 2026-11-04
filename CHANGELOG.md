@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05: Unified password rotation helper and PBS 401 diagnosis
+
+- Added executable `set-password.sh` to prompt once (with confirmation) on the CT console and synchronize Linux root, Samba root, and the stored `ROOT_PASSWORD` without running `start.sh` or exposing the password in the shell command line.
+- The helper refreshes `PBS_FINGERPRINT` from the existing PBS certificate. PBS login requires username `root@pam`; the `root@pbs` realm is not the Linux root account.
+- Documented that manual `passwd root` does not update Samba or the `credentials` file and that a PVE PBS storage password is stored separately.
+- Diagnosed PVE PBS storage HTTP 401 as a credential mismatch; the CT root shadow file was modified after the appliance credential file, so rerunning `start.sh` would have unexpectedly restored the earlier stored password.
+
+
 ## 2026-11-05: Fix PBS datastore unavailable (EACCES)
 
 - Fixed `/srv/pbs` ownership from `root:root` to `root:backup` and mode from `0700` to `0710` after PBS installation. The previous setting prevented the PBS service account `backup` from reaching `/srv/pbs/backup/.chunks` and caused `Datastore is not available` / `Permission denied (os error 13)` in the UI.
