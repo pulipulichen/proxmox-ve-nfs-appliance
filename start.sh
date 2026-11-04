@@ -165,11 +165,24 @@ done
 /usr/sbin/sshd -T | grep -E '^(permitrootlogin|passwordauthentication) '
 testparm -s /etc/samba/smb.conf >/dev/null
 proxmox-backup-manager datastore list
+
+# The PBS TLS certificate fingerprint is public metadata, not a second password.
+# Refresh it after PBS installation and on every rerun (including certificate renewal).
+PBS_FINGERPRINT="$(openssl x509 -in /etc/proxmox-backup/proxy.pem -noout -fingerprint -sha256 | sed -n 's/^sha256 Fingerprint=//Ip')"
+if [[ ! "$PBS_FINGERPRINT" =~ ^([[:xdigit:]]{2}:){31}[[:xdigit:]]{2}$ ]]; then
+  echo "Could not read a valid PBS certificate SHA-256 fingerprint." >&2
+  exit 1
+fi
+(umask 077; printf 'ROOT_PASSWORD=%q\nPBS_FINGERPRINT=%q\n' "$ROOT_PASSWORD" "$PBS_FINGERPRINT" > "$CREDS_FILE.new")
+mv -f "$CREDS_FILE.new" "$CREDS_FILE"
+chmod 0600 "$CREDS_FILE"
+
 CT_IP="$(hostname -I | awk '{print $1}')"
 echo "NFS:   ${CT_IP}:/srv/nfs"
 echo "SMB:   \\\\${CT_IP}\\nfs (root)"
 echo "SSH:   ssh root@${CT_IP}"
 echo "SFTP:  sftp root@${CT_IP} (browse /srv/nfs)"
 echo "PBS:   https://${CT_IP}:8007 (root@pam, datastore: ${PBS_DATASTORE})"
-echo "Only password variable: ROOT_PASSWORD; local file: $CREDS_FILE"
+echo "PBS fingerprint: $PBS_FINGERPRINT"
+echo "One password variable: ROOT_PASSWORD; local file (includes PBS_FINGERPRINT): $CREDS_FILE"
 echo "Preserved: $DATA_DIR and $PBS_PATH"
