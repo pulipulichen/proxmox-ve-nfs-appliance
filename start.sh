@@ -1,106 +1,92 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Idempotent Debian 13 LXC NFS + SMB + SFTP appliance setup.
+# Debian 13 LXC: NFS + root SSH/SFTP + root SMB + PBS (no-subscription).
+# Re-runnable: does not remove /srv/nfs or existing PBS datastore data.
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Run as root inside the LXC container." >&2
+  echo "Run as root inside the Debian 13 container." >&2
+  exit 1
+fi
+if [ "$(. /etc/os-release; printf '%s' "${VERSION_CODENAME:-}")" != trixie ]; then
+  echo "This appliance requires Debian 13 (trixie)." >&2
   exit 1
 fi
 
 DATA_DIR=/srv/nfs
-UPLOAD_USER=nfs-upload
+PBS_ROOT=/srv/pbs
+PBS_DATASTORE=backup
+PBS_PATH=$PBS_ROOT/$PBS_DATASTORE
 CREDS_DIR=/root/.config/proxmox-ve-nfs-appliance
 CREDS_FILE=$CREDS_DIR/credentials
-REPO_URL=https://github.com/pulipulichen/proxmox-ve-nfs-appliance.git
 export DEBIAN_FRONTEND=noninteractive
 
-echo "[1/7] Installing required packages"
+echo "[1/8] Installing Debian components"
 apt-get update
-apt-get install -y nfs-kernel-server openssh-server samba smbclient git openssl ca-certificates
+apt-get install -y nfs-kernel-server openssh-server samba smbclient git openssl ca-certificates wget
 
-echo "[2/7] Preparing shared storage (never remove existing data)"
-mkdir -p "$DATA_DIR" "$CREDS_DIR"
-chown root:root /srv
+echo "[2/8] Preserving share and consolidating one root password"
+install -d -m 0700 "$CREDS_DIR"
+mkdir -p "$DATA_DIR" "$PBS_ROOT"
+chown root:root /srv "$DATA_DIR" "$PBS_ROOT"
 chmod 0755 /srv
-# Preserves original appliance semantics: any trusted local client can write.
 chmod 0777 "$DATA_DIR"
-chmod 0700 "$CREDS_DIR"
+chmod 0700 "$PBS_ROOT"
 
-echo "[3/7] Configuring NFS"
+# Retain the ROOT_PASSWORD from the earlier two-password installer.
+# A supplied ROOT_PASSWORD environment variable explicitly rotates the password.
+override_password="${ROOT_PASSWORD:-}"
+if [ -s "$CREDS_FILE" ]; then
+  # Local root-owned, mode-0600 credentials created by this appliance.
+  if [ "$(stat -c %u "$CREDS_FILE")" != 0 ] || [ "$(stat -c %a "$CREDS_FILE")" != 600 ]; then
+    echo "Unsafe credentials owner/permissions: $CREDS_FILE" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  . "$CREDS_FILE"
+fi
+if [ -n "$override_password" ]; then
+  ROOT_PASSWORD=$override_password
+fi
+if [ -z "${ROOT_PASSWORD:-}" ]; then
+  ROOT_PASSWORD="$(openssl rand -hex 18)"
+fi
+unset override_password NFS_UPLOAD_PASSWORD
+# %q escapes characters (including spaces and !), safe for a future bash source.
+(umask 077; printf 'ROOT_PASSWORD=%q\n' "$ROOT_PASSWORD" > "$CREDS_FILE.new")
+mv -f "$CREDS_FILE.new" "$CREDS_FILE"
+chmod 0600 "$CREDS_FILE"
+printf 'root:%s\n' "$ROOT_PASSWORD" | chpasswd
+
+echo "[3/8] Configuring NFS (legacy permissive export)"
 if ! grep -Eq '^/srv/nfs[[:space:]]' /etc/exports 2>/dev/null; then
   printf '/srv/nfs *(rw,sync,no_subtree_check,no_root_squash,insecure)\n' >> /etc/exports
 fi
 systemctl enable --now nfs-kernel-server
 exportfs -ra
 
-echo "[4/7] Initializing credentials (generated only once)"
-if [ ! -s "$CREDS_FILE" ]; then
-  (
-    umask 077
-    printf 'ROOT_PASSWORD=%s\n' "$(openssl rand -hex 18)"
-    printf 'NFS_UPLOAD_PASSWORD=%s\n' "$(openssl rand -hex 18)"
-  ) > "$CREDS_FILE"
-fi
-chmod 0600 "$CREDS_FILE"
-# Only this root-owned, mode-0600, locally generated file is sourced.
-# shellcheck disable=SC1090
-. "$CREDS_FILE"
-
-root_state="$(passwd -S root | awk '{print $2}')"
-if [ "$root_state" = "L" ]; then
-  printf 'root:%s\n' "$ROOT_PASSWORD" | chpasswd
-  echo "  Enabled root account with generated password."
-else
-  echo "  Keeping existing root password."
-fi
-
-upload_created=no
-if ! id -u "$UPLOAD_USER" >/dev/null 2>&1; then
-  useradd --home-dir /nfs --no-create-home --shell /usr/sbin/nologin --user-group "$UPLOAD_USER"
-  upload_created=yes
-fi
-if [ "$upload_created" = yes ]; then
-  printf '%s:%s\n' "$UPLOAD_USER" "$NFS_UPLOAD_PASSWORD" | chpasswd
-fi
-
-echo "[5/7] Configuring root SSH and restricted SFTP"
-mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/10-nfs-appliance-root.conf <<'EOF'
-# Appliance administrator access; keep behind a trusted network.
+echo "[4/8] Enabling root SSH and SFTP"
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/10-nfs-appliance-root.conf <<'SSH'
+# Trusted networks only. SFTP is available with the same root credentials.
 PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes
-EOF
-
-if [ ! -e /etc/ssh/sshd_config.before-nfs-appliance ]; then
-  cp -a /etc/ssh/sshd_config /etc/ssh/sshd_config.before-nfs-appliance
+SSH
+# Remove the restricted nfs-upload SFTP rule used by older appliance releases.
+if [ -f /etc/ssh/sshd_config ]; then
+  sed -i '/^# BEGIN NFS-APPLIANCE SFTP$/,/^# END NFS-APPLIANCE SFTP$/d' /etc/ssh/sshd_config
 fi
-sed -i '/^# BEGIN NFS-APPLIANCE SFTP$/,/^# END NFS-APPLIANCE SFTP$/d' /etc/ssh/sshd_config
-cat >> /etc/ssh/sshd_config <<'EOF'
-
-# BEGIN NFS-APPLIANCE SFTP
-Match User nfs-upload
-    ChrootDirectory /srv
-    ForceCommand internal-sftp -d /nfs
-    PermitTTY no
-    AllowTcpForwarding no
-    X11Forwarding no
-# END NFS-APPLIANCE SFTP
-EOF
-
 install -d -m 0755 /run/sshd
 /usr/sbin/sshd -t
-# On Debian 13 socket-activated SSH, SIGHUP may drop inherited listen FDs.
-# Prefer a plain ssh.service so future updates can safely restart the daemon.
 systemctl disable --now ssh.socket >/dev/null 2>&1 || true
 systemctl enable ssh
 systemctl restart ssh
 
-echo "[6/7] Configuring Samba (authenticated SMB, port 445)"
-if [ ! -e /etc/samba/smb.conf.before-nfs-appliance ] && [ -e /etc/samba/smb.conf ]; then
+echo "[5/8] Configuring root-only Samba"
+if [ ! -e /etc/samba/smb.conf.before-nfs-appliance ] && [ -f /etc/samba/smb.conf ]; then
   cp -a /etc/samba/smb.conf /etc/samba/smb.conf.before-nfs-appliance
 fi
-cat > /etc/samba/smb.conf <<'EOF'
+cat > /etc/samba/smb.conf <<'SMB'
 [global]
    workgroup = WORKGROUP
    server string = Proxmox VE NFS Appliance
@@ -119,31 +105,71 @@ cat > /etc/samba/smb.conf <<'EOF'
    browseable = yes
    read only = no
    guest ok = no
-   valid users = nfs-upload
-   force user = nfs-upload
+   valid users = root
+   force user = root
    create mask = 0666
    force create mode = 0666
    directory mask = 0777
    force directory mode = 0777
-EOF
+SMB
 testparm -s /etc/samba/smb.conf >/dev/null
-if ! pdbedit -L -u "$UPLOAD_USER" 2>/dev/null | grep -q "^$UPLOAD_USER:"; then
-  printf '%s\n%s\n' "$NFS_UPLOAD_PASSWORD" "$NFS_UPLOAD_PASSWORD" | smbpasswd -a -s "$UPLOAD_USER" >/dev/null
+printf '%s\n%s\n' "$ROOT_PASSWORD" "$ROOT_PASSWORD" | smbpasswd -a -s root >/dev/null
+smbpasswd -e root >/dev/null
+# Deactivate the obsolete nfs-upload identity; preserve its files.
+if pdbedit -L -u nfs-upload 2>/dev/null | grep -q '^nfs-upload:'; then
+  smbpasswd -d nfs-upload >/dev/null || true
 fi
-smbpasswd -e "$UPLOAD_USER" >/dev/null
+if id -u nfs-upload >/dev/null 2>&1; then
+  usermod -L nfs-upload >/dev/null 2>&1 || true
+fi
 systemctl disable --now nmbd >/dev/null 2>&1 || true
 systemctl enable smbd
 systemctl restart smbd
 
-echo "[7/7] Checking services"
-systemctl is-active --quiet nfs-kernel-server
-systemctl is-active --quiet ssh
-systemctl is-active --quiet smbd
+echo "[6/8] Installing Proxmox Backup Server from no-subscription repository"
+install -d -m 0755 /usr/share/keyrings
+key_tmp="$(mktemp)"
+trap 'rm -f "$key_tmp"' EXIT
+wget -q --https-only https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg -O "$key_tmp"
+test -s "$key_tmp"
+install -m 0644 "$key_tmp" /usr/share/keyrings/proxmox-archive-keyring.gpg
+rm -f "$key_tmp"
+trap - EXIT
+cat > /etc/apt/sources.list.d/proxmox-pbs-no-subscription.sources <<'PBS_REPO'
+Types: deb
+URIs: http://download.proxmox.com/debian/pbs
+Suites: trixie
+Components: pbs-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+PBS_REPO
+if [ -f /etc/apt/sources.list.d/pbs-enterprise.sources ]; then
+  mv /etc/apt/sources.list.d/pbs-enterprise.sources /etc/apt/sources.list.d/pbs-enterprise.sources.disabled-by-appliance
+fi
+apt-get update
+apt-get install -y proxmox-backup-server
+
+echo "[7/8] Initializing private PBS datastore"
+if ! grep -Eq "^datastore: ${PBS_DATASTORE}$" /etc/proxmox-backup/datastore.cfg 2>/dev/null; then
+  proxmox-backup-manager datastore create "$PBS_DATASTORE" "$PBS_PATH" \
+    --gc-schedule daily --comment "Private PBS backup storage (not exported via NFS or SMB)"
+fi
+systemctl enable --now proxmox-backup-proxy
+systemctl start proxmox-backup
+# The datastore should remain private even when /srv/nfs is world-writable.
+chmod 0700 "$PBS_ROOT"
+
+echo "[8/8] Verifying services"
+for service in nfs-kernel-server ssh smbd proxmox-backup-proxy proxmox-backup; do
+  systemctl is-active --quiet "$service" || { echo "Failed: $service" >&2; exit 1; }
+done
 /usr/sbin/sshd -T | grep -E '^(permitrootlogin|passwordauthentication) '
-exportfs -v | grep /srv/nfs
-echo "NFS:   CT-IP:/srv/nfs"
-echo "SFTP:  sftp://$UPLOAD_USER@CT-IP:22/ (starts in /nfs)"
-echo "SMB:   \\\\CT-IP\\nfs"
-echo "SSH:   ssh root@CT-IP"
-echo "Initial credentials (root-only): $CREDS_FILE"
-echo "Done. No existing data under $DATA_DIR was deleted."
+testparm -s /etc/samba/smb.conf >/dev/null
+proxmox-backup-manager datastore list
+CT_IP="$(hostname -I | awk '{print $1}')"
+echo "NFS:   ${CT_IP}:/srv/nfs"
+echo "SMB:   \\\\${CT_IP}\\nfs (root)"
+echo "SSH:   ssh root@${CT_IP}"
+echo "SFTP:  sftp root@${CT_IP} (browse /srv/nfs)"
+echo "PBS:   https://${CT_IP}:8007 (root@pam, datastore: ${PBS_DATASTORE})"
+echo "Only password variable: ROOT_PASSWORD; local file: $CREDS_FILE"
+echo "Preserved: $DATA_DIR and $PBS_PATH"
