@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-05: Fix PBS datastore unavailable (EACCES)
+
+- Fixed `/srv/pbs` ownership from `root:root` to `root:backup` and mode from `0700` to `0710` after PBS installation. The previous setting prevented the PBS service account `backup` from reaching `/srv/pbs/backup/.chunks` and caused `Datastore is not available` / `Permission denied (os error 13)` in the UI.
+- On subsequent runs, preserve `backup` group traversal instead of resetting access to `root:root` during early provisioning.
+- Verify that the `backup` account can read and write `.chunks` before declaring provisioning successful; retain datastore files and private access isolation.
+
+
 ## 2026-11-05: Save PBS certificate fingerprint beside root credentials
 
 - Automatically read the actual TLS SHA-256 certificate fingerprint of the running PBS instance into `PBS_FINGERPRINT`.

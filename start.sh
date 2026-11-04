@@ -32,10 +32,20 @@ apt-get install -y nfs-kernel-server openssh-server samba smbclient git openssl 
 echo "[2/8] Preserving share and consolidating one root password"
 install -d -m 0700 "$CREDS_DIR"
 mkdir -p "$DATA_DIR" "$PBS_ROOT"
-chown root:root /srv "$DATA_DIR" "$PBS_ROOT"
+chown root:root /srv "$DATA_DIR"
 chmod 0755 /srv
 chmod 0777 "$DATA_DIR"
-chmod 0700 "$PBS_ROOT"
+# The PBS daemon writes as user:group backup:backup. A root:root /srv/pbs
+# with mode 0700 blocks access to the datastore even when .chunks is owned
+# by backup. Keep the parent private but traversable by the backup group.
+if getent group backup >/dev/null 2>&1; then
+  chown root:backup "$PBS_ROOT"
+  chmod 0710 "$PBS_ROOT"
+else
+  # Before PBS installation, the backup group may not exist yet.
+  chown root:root "$PBS_ROOT"
+  chmod 0700 "$PBS_ROOT"
+fi
 
 # Retain the ROOT_PASSWORD from the earlier two-password installer.
 # A supplied ROOT_PASSWORD environment variable explicitly rotates the password.
@@ -160,8 +170,12 @@ if ! grep -Eq "^datastore: ${PBS_DATASTORE}$" /etc/proxmox-backup/datastore.cfg 
 fi
 systemctl enable --now proxmox-backup-proxy
 systemctl start proxmox-backup
-# The datastore should remain private even when /srv/nfs is world-writable.
-chmod 0700 "$PBS_ROOT"
+# PBS stores chunks as the backup service account. Allow only root and the
+# backup group to traverse the private parent directory (not SMB/NFS users).
+chown root:backup "$PBS_ROOT"
+chmod 0710 "$PBS_ROOT"
+# Fail provisioning if backup cannot read/write its own chunk store.
+su -s /bin/sh -c 'test -r /srv/pbs/backup/.chunks && test -w /srv/pbs/backup/.chunks' backup
 
 echo "[8/8] Verifying services"
 for service in nfs-kernel-server ssh smbd proxmox-backup-proxy proxmox-backup; do
