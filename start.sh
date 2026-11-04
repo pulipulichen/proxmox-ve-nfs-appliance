@@ -88,9 +88,13 @@ Match User nfs-upload
 # END NFS-APPLIANCE SFTP
 EOF
 
+install -d -m 0755 /run/sshd
 /usr/sbin/sshd -t
-systemctl enable --now ssh
-systemctl reload ssh
+# On Debian 13 socket-activated SSH, SIGHUP may drop inherited listen FDs.
+# Prefer a plain ssh.service so future updates can safely restart the daemon.
+systemctl disable --now ssh.socket >/dev/null 2>&1 || true
+systemctl enable ssh
+systemctl restart ssh
 
 echo "[6/7] Configuring Samba (authenticated SMB, port 445)"
 if [ ! -e /etc/samba/smb.conf.before-nfs-appliance ] && [ -e /etc/samba/smb.conf ]; then
