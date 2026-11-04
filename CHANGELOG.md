@@ -4,6 +4,7 @@
 
 - Made **ROOT_PASSWORD** the only saved password variable. The installer migrates the existing ROOT_PASSWORD in the local root-owned credentials file and removes NFS_UPLOAD_PASSWORD.
 - Samba now authenticates as **root** using the same password as SSH and SFTP. The obsolete nfs-upload Samba account is disabled, and its SFTP Match rule removed. Existing files are preserved.
+- **Migration notice:** previously configured PVE CIFS storage using nfs-upload needs username/password updated to root/ROOT_PASSWORD; otherwise the old CIFS storage is inactive.
 - Root Linux password is synchronized to saved ROOT_PASSWORD on every installer run, so PBS PAM login as **root@pam** uses the same password.
 - Added **PBS 4 / Debian 13** installation via official **pbs-no-subscription** apt repository; enterprise repository is disabled if present.
 - PBS datastore **backup** at `/srv/pbs/backup` is initialized once and remains separate from writable `/srv/nfs`. Automatically enables PBS services and validates them.

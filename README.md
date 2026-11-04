@@ -71,6 +71,10 @@ After adding storage, select `appliance-pbs` as the destination for a backup job
 net use Z: \\CT-IP\nfs /user:root *
 ```
 
+### Existing CIFS storage on PVE after root-only migration
+
+An existing PVE CIFS storage previously configured with `nfs-upload` (for example `test-smb`) will become **inactive** after this migration because the old Samba identity is deliberately disabled. In **PVE > Datacenter > Storage**, edit that CIFS storage to use **username `root` and the same ROOT_PASSWORD**, then verify its status. Do **not** delete or reformat the underlying NFS/SMB data while changing credentials. PVE does not update existing CIFS storage credentials automatically.
+
 ### Read the saved credential locally (change CTID)
 
 ```bash
